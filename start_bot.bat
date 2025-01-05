@@ -8,15 +8,16 @@ setlocal enabledelayedexpansion
 :: Change to the bot directory
 cd /d "%~dp0"
 
-:: Create logs directory first
+:: Create necessary directories
 if not exist "logs" mkdir logs
-
-:: Redirect all output to log file
-echo Starting bot at %date% %time% > logs\startup.log 2>&1
-
-:: Create other necessary directories
 if not exist "data" mkdir data
 if not exist "abi" mkdir abi
+
+:: Clear previous log files
+echo. > logs\startup.log
+echo. > logs\bot.log
+
+echo Starting bot at %date% %time% >> logs\startup.log 2>&1
 
 :: Create virtual environment if it doesn't exist
 if not exist "venv" (
@@ -40,40 +41,6 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: Check Python version
-python --version >> logs\startup.log 2>&1
-if errorlevel 1 (
-    echo Python is not installed or not in PATH >> logs\startup.log 2>&1
-    type logs\startup.log
-    pause
-    exit /b 1
-)
-
-:: Create or update ABI files
-echo Creating ABI files... >> logs\startup.log 2>&1
-(
-echo {
-echo   "inputs": [
-echo     {"internalType": "uint256", "name": "amountIn", "type": "uint256"},
-echo     {"internalType": "address[]", "name": "path", "type": "address[]"}
-echo   ],
-echo   "name": "getAmountsOut",
-echo   "outputs": [{"internalType": "uint256[]", "name": "amounts", "type": "uint256[]"}],
-echo   "stateMutability": "view",
-echo   "type": "function"
-echo }
-) > abi\router.json
-
-(
-echo {
-echo   "constant": true,
-echo   "inputs": [],
-echo   "name": "decimals",
-echo   "outputs": [{"name": "", "type": "uint8"}],
-echo   "type": "function"
-echo }
-) > abi\erc20.json
-
 :: Install requirements with detailed error logging
 echo Installing requirements... >> logs\startup.log 2>&1
 pip install -r requirements.txt >> logs\startup.log 2>&1
@@ -87,8 +54,8 @@ if errorlevel 1 (
 :: Start the web server with immediate output
 echo Starting web server... >> logs\startup.log 2>&1
 
-:: Run Python with unbuffered output and error handling
-python -u web_server.py > logs\bot.log 2>&1
+:: Run Python with unbuffered output
+python -u web_server.py >> logs\startup.log 2>&1
 
 :: Check if the server started successfully
 timeout /t 2 /nobreak > nul

@@ -19,27 +19,45 @@ echo. > logs\bot.log
 
 echo Starting bot at %date% %time% >> logs\startup.log 2>&1
 
-:: Create virtual environment if it doesn't exist
-if not exist "venv" (
-    echo Creating virtual environment... >> logs\startup.log 2>&1
-    python -m venv venv >> logs\startup.log 2>&1
-    if errorlevel 1 (
-        echo Error creating virtual environment >> logs\startup.log 2>&1
-        type logs\startup.log
-        pause
-        exit /b 1
-    )
+:: Check if Python is installed
+python --version > nul 2>&1
+if errorlevel 1 (
+    echo Python is not installed or not in PATH >> logs\startup.log 2>&1
+    echo Please install Python 3.8 or later >> logs\startup.log 2>&1
+    type logs\startup.log
+    pause
+    exit /b 1
 )
 
-:: Activate virtual environment
+:: Remove old virtual environment if it exists
+if exist "venv" (
+    echo Removing old virtual environment... >> logs\startup.log 2>&1
+    rmdir /s /q venv
+)
+
+:: Create new virtual environment
+echo Creating virtual environment... >> logs\startup.log 2>&1
+python -m venv venv
+if errorlevel 1 (
+    echo Failed to create virtual environment >> logs\startup.log 2>&1
+    type logs\startup.log
+    pause
+    exit /b 1
+)
+
+:: Activate virtual environment using full path
 echo Activating virtual environment... >> logs\startup.log 2>&1
-call venv\Scripts\activate >> logs\startup.log 2>&1
+call "%~dp0venv\Scripts\activate.bat"
 if errorlevel 1 (
     echo Error activating virtual environment >> logs\startup.log 2>&1
     type logs\startup.log
     pause
     exit /b 1
 )
+
+:: Upgrade pip
+echo Upgrading pip... >> logs\startup.log 2>&1
+python -m pip install --upgrade pip >> logs\startup.log 2>&1
 
 :: Install requirements with detailed error logging
 echo Installing requirements... >> logs\startup.log 2>&1

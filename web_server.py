@@ -41,7 +41,7 @@ try:
         def __init__(self):
             self.base_path = Path(__file__).parent
             self.app = web.Application()
-            self.trader = DexTrader(chain='ethereum')
+            self.trader = None
             self.websockets = set()
             self.running = False
             self.price_update_interval = 60
@@ -49,204 +49,128 @@ try:
             self.enable_price_alerts = True
             self.enable_position_alerts = True
             self.enable_gas_alerts = True
-            self.setup_routes()
 
-        def setup_routes(self):
-            self.app.router.add_get('/', self.handle_index)
-            self.app.router.add_get('/ws', self.handle_websocket)
-            self.app.router.add_static('/static/', path=self.base_path / 'static', name='static')
+        async def initialize(self):
+            """Initialize the trading bot server"""
+            try:
+                # Initialize trader
+                self.trader = DexTrader(chain='ethereum')
+                await self.trader.initialize()
+
+                # Setup routes
+                self.app.router.add_get('/', self.handle_index)
+                self.app.router.add_get('/ws', self.handle_websocket)
+                self.app.router.add_static('/static', self.base_path / 'static')
+
+                return self
+            except Exception as e:
+                logger.error(f"Error initializing server: {str(e)}")
+                raise
 
         async def handle_index(self, request):
-            with open(self.base_path / 'templates' / 'index.html', 'r', encoding='utf-8') as f:
-                html_content = f.read()
-            return web.Response(text=html_content, content_type='text/html')
+            """Handle index page request"""
+            try:
+                index_path = self.base_path / 'templates' / 'index.html'
+                with open(index_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                return web.Response(text=content, content_type='text/html')
+            except Exception as e:
+                logger.error(f"Error serving index page: {str(e)}")
+                return web.Response(text="Error loading page", status=500)
 
         async def handle_websocket(self, request):
+            """Handle WebSocket connections"""
             ws = web.WebSocketResponse()
             await ws.prepare(request)
             self.websockets.add(ws)
-
+            
             try:
-                # Send initial state
-                await self.send_initial_state(ws)
-
                 async for msg in ws:
                     if msg.type == aiohttp.WSMsgType.TEXT:
                         try:
                             data = json.loads(msg.data)
-                            await self.handle_ws_message(ws, data)
+                            # Handle different message types
+                            if data['type'] == 'get_status':
+                                await self.send_status(ws)
+                            elif data['type'] == 'execute_trade':
+                                await self.handle_trade(ws, data)
                         except json.JSONDecodeError:
-                            logger.error(f"Invalid JSON received: {msg.data}")
+                            logger.error("Invalid JSON received")
                         except Exception as e:
-                            logger.error(f"Error handling message: {e}")
-                    elif msg.type == aiohttp.WSMsgType.ERROR:
-                        logger.error(f'WebSocket connection closed with exception {ws.exception()}')
-
+                            logger.error(f"Error handling message: {str(e)}")
             finally:
-                if ws in self.websockets:
-                    self.websockets.remove(ws)
+                self.websockets.remove(ws)
             return ws
 
-        async def get_gas_price(self):
-            """Get current gas price in Gwei"""
+        async def send_status(self, ws):
+            """Send status update to client"""
             try:
-                gas_price = await self.trader.w3.eth.gas_price
-                return float(self.trader.w3.from_wei(gas_price, 'gwei'))
-            except Exception as e:
-                logger.error(f"Error getting gas price: {e}")
-                return 0
-
-        async def get_wallet_balance(self):
-            """Get wallet balance in ETH"""
-            try:
-                balance = await self.trader.w3.eth.get_balance(self.trader.account.address)
-                return float(self.trader.w3.from_wei(balance, 'ether'))
-            except Exception as e:
-                logger.error(f"Error getting wallet balance: {e}")
-                return 0
-
-        async def send_initial_state(self, ws):
-            try:
-                # Get wallet info
-                balance = await self.get_wallet_balance()
-                gas_price = await self.get_gas_price()
-
-                initial_state = {
-                    'wallet': {
-                        'address': self.trader.account.address,
-                        'balance': str(balance),
-                        'network': 'Ethereum Mainnet'
-                    },
-                    'trading': {
-                        'total': 0,
-                        'successful': 0,
-                        'pnl': '0.00'
-                    },
-                    'gas': {
-                        'current': gas_price,
-                        'limit': 300000,
-                        'max': 150
-                    },
-                    'pairs': []  # Add some default pairs here
+                if not self.trader:
+                    return
+                
+                status = {
+                    'type': 'status',
+                    'wallet': self.trader.account.address,
+                    'network': 'Ethereum',
+                    'timestamp': datetime.now().isoformat()
                 }
-
-                await ws.send_json(initial_state)
-                await self.send_log(ws, 'info', 'Connected to trading bot')
+                await ws.send_json(status)
             except Exception as e:
-                logger.error(f"Error sending initial state: {e}")
-                await self.send_log(ws, 'error', f'Error initializing: {str(e)}')
+                logger.error(f"Error sending status: {str(e)}")
 
-        async def handle_ws_message(self, ws, data):
-            action = data.get('action')
+        async def handle_trade(self, ws, data):
+            """Handle trade execution request"""
             try:
-                if action == 'start':
-                    if not self.running:
-                        self.running = True
-                        asyncio.create_task(self.run_bot())
-                        await self.send_log(ws, 'success', 'Bot started successfully')
-                elif action == 'stop':
-                    if self.running:
-                        self.running = False
-                        await self.send_log(ws, 'info', 'Bot stopped')
-                elif action == 'pause':
-                    if self.running:
-                        self.running = False
-                        await self.send_log(ws, 'info', 'Bot paused')
-                elif action == 'updateSettings':
-                    settings = data.get('settings')
-                    if settings:
-                        await self.update_settings(ws, settings)
-                elif action == 'trade':
-                    token_address = data.get('address')
-                    if token_address:
-                        await self.send_log(ws, 'info', f'Trading token: {token_address}')
-                else:
-                    await self.send_log(ws, 'warning', f'Unknown action: {action}')
-            except Exception as e:
-                await self.send_log(ws, 'error', f'Error processing action {action}: {str(e)}')
+                if not self.trader:
+                    await ws.send_json({
+                        'type': 'error',
+                        'message': 'Trader not initialized'
+                    })
+                    return
 
-        async def update_settings(self, ws, settings):
-            """Update bot settings"""
-            try:
-                # Update trading settings
-                trading = settings.get('trading', {})
-                self.trader.max_slippage = trading.get('maxSlippage', 2)
-                self.trader.gas_limit = trading.get('gasLimit', 300000)
-                self.trader.max_gas_price = trading.get('maxGasPrice', 150)
-
-                # Update monitoring settings
-                monitoring = settings.get('monitoring', {})
-                self.price_update_interval = monitoring.get('priceUpdateInterval', 60)
-                self.event_polling_interval = monitoring.get('eventPollingInterval', 30)
-
-                # Update alert settings
-                alerts = settings.get('alerts', {})
-                self.enable_price_alerts = alerts.get('enablePriceAlerts', True)
-                self.enable_position_alerts = alerts.get('enablePositionAlerts', True)
-                self.enable_gas_alerts = alerts.get('enableGasAlerts', True)
-
-                await self.send_log(ws, 'success', 'Settings updated successfully')
-            except Exception as e:
-                await self.send_log(ws, 'error', f'Error updating settings: {str(e)}')
-
-        async def send_log(self, ws, level, message):
-            log_message = {
-                'type': 'log',
-                'data': {
-                    'level': level,
-                    'message': message,
-                    'timestamp': asyncio.get_event_loop().time()
-                }
-            }
-            if ws in self.websockets:
-                await ws.send_json(log_message)
-
-        async def broadcast(self, message):
-            if self.websockets:
-                await asyncio.gather(
-                    *[ws.send_json(message) for ws in self.websockets if not ws.closed]
+                # Execute trade logic here
+                result = await self.trader.execute_trade(
+                    data['token_address'],
+                    int(data['amount']),
+                    data.get('is_buy', True)
                 )
 
-        async def run_bot(self):
-            while self.running:
-                try:
-                    # Update gas prices and wallet balance
-                    gas_price = await self.get_gas_price()
-                    balance = await self.get_wallet_balance()
+                await ws.send_json({
+                    'type': 'trade_result',
+                    'success': bool(result),
+                    'tx_hash': result if result else None
+                })
+            except Exception as e:
+                logger.error(f"Error executing trade: {str(e)}")
+                await ws.send_json({
+                    'type': 'error',
+                    'message': str(e)
+                })
 
-                    update = {
-                        'type': 'update',
-                        'data': {
-                            'wallet': {
-                                'balance': str(balance)
-                            },
-                            'gas': {
-                                'current': gas_price
-                            }
-                        }
-                    }
+        async def start(self):
+            """Start the trading bot server"""
+            try:
+                runner = web.AppRunner(self.app)
+                await runner.setup()
+                site = web.TCPSite(runner, 'localhost', 8081)
+                await site.start()
+                logger.info("Server started at http://localhost:8081")
+            except Exception as e:
+                logger.error(f"Error starting server: {str(e)}")
+                raise
 
-                    await self.broadcast(update)
-                    await asyncio.sleep(5)  # Update every 5 seconds
-
-                except Exception as e:
-                    logger.error(f"Error in bot loop: {e}")
-                    await self.broadcast({
-                        'type': 'log',
-                        'data': {
-                            'level': 'error',
-                            'message': f'Bot error: {str(e)}',
-                            'timestamp': asyncio.get_event_loop().time()
-                        }
-                    })
-                    await asyncio.sleep(5)
-
-    def main():
+    async def main():
+        """Main entry point"""
         server = TradingBotServer()
-        web.run_app(server.app, host='127.0.0.1', port=8081)
+        await server.initialize()
+        await server.start()
+        
+        # Keep the server running
+        while True:
+            await asyncio.sleep(3600)
 
     if __name__ == '__main__':
-        main()
+        asyncio.run(main())
 except Exception as e:
     logger.error(f"Critical error during startup: {str(e)}")
     logger.error(traceback.format_exc())

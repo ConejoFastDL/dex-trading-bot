@@ -49,175 +49,120 @@ class DexTrader:
         self.router = self.w3.eth.contract(address=self.router_address, abi=router_abi)
         
         logger.info(f"DexTrader initialized for {chain}")
-        logger.info(f"Connected to network: {self.w3.eth.chain_id}")
+        
+    async def initialize(self):
+        """Initialize async components of the trader"""
+        chain_id = await self.w3.eth.chain_id
+        logger.info(f"Connected to network: Chain ID {chain_id}")
         logger.info(f"Wallet address: {self.account.address}")
+        return self
 
-    async def get_token_price(self, token_address, amount_in=Web3.to_wei(1, 'ether')):
-        """Get token price in ETH"""
+    async def get_token_contract(self, token_address):
+        """Get token contract instance"""
+        token_address = Web3.to_checksum_address(token_address)
+        with open('abi/erc20.json', 'r') as f:
+            token_abi = json.load(f)
+        return self.w3.eth.contract(address=token_address, abi=token_abi)
+
+    async def get_token_balance(self, token_address):
+        """Get token balance for the connected wallet"""
+        token_contract = await self.get_token_contract(token_address)
+        balance = await token_contract.functions.balanceOf(self.account.address).call()
+        return balance
+
+    async def get_token_allowance(self, token_address, spender_address):
+        """Get token allowance for a spender"""
+        token_contract = await self.get_token_contract(token_address)
+        allowance = await token_contract.functions.allowance(
+            self.account.address,
+            spender_address
+        ).call()
+        return allowance
+
+    async def approve_token(self, token_address, spender_address, amount):
+        """Approve token spending"""
+        token_contract = await self.get_token_contract(token_address)
+        
+        # Build the transaction
+        nonce = await self.w3.eth.get_transaction_count(self.account.address)
+        gas_price = await self.w3.eth.gas_price
+        
+        txn = await token_contract.functions.approve(
+            spender_address,
+            amount
+        ).build_transaction({
+            'from': self.account.address,
+            'gas': self.gas_limit,
+            'gasPrice': gas_price,
+            'nonce': nonce,
+        })
+        
+        # Sign and send the transaction
+        signed_txn = self.w3.eth.account.sign_transaction(txn, self.account.key)
+        tx_hash = await self.w3.eth.send_raw_transaction(signed_txn.rawTransaction)
+        return tx_hash
+
+    async def get_price_data(self, token_address, amount_in=Web3.to_wei(1, 'ether')):
+        """Get token price data"""
         try:
-            token_address = Web3.to_checksum_address(token_address)
-            path = [token_address, self.network_config['weth']]
-            
-            amounts_out = await self.router.functions.getAmountsOut(
+            # Use router to get amounts out
+            amounts = await self.router.functions.getAmountsOut(
                 amount_in,
-                path
+                [token_address, self.network_config['weth']]
             ).call()
-            
-            return amounts_out[1]
+            return amounts[1] / amount_in
         except Exception as e:
-            logger.error(f"Error getting token price: {e}")
-            return 0
+            logger.error(f"Error getting price data: {str(e)}")
+            return None
 
-    async def get_gas_estimate(self, token_address, amount):
-        """Estimate gas for a trade"""
-        try:
-            token_address = Web3.to_checksum_address(token_address)
-            path = [self.network_config['weth'], token_address]
-            deadline = int(datetime.now().timestamp()) + 300  # 5 minutes
-            
-            gas_estimate = await self.router.functions.swapExactETHForTokens(
-                0,  # min amount out
-                path,
-                self.account.address,
-                deadline
-            ).estimate_gas({
-                'from': self.account.address,
-                'value': amount
-            })
-            
-            return gas_estimate
-        except Exception as e:
-            logger.error(f"Error estimating gas: {e}")
-            return self.gas_limit
-
-    async def execute_trade(self, token_address, amount_in, min_amount_out):
+    async def execute_trade(self, token_address, amount, is_buy=True):
         """Execute a trade"""
         try:
-            token_address = Web3.to_checksum_address(token_address)
-            path = [self.network_config['weth'], token_address]
+            path = [self.network_config['weth'], token_address] if is_buy else [token_address, self.network_config['weth']]
+            
+            # Get amounts out
+            amounts = await self.router.functions.getAmountsOut(amount, path).call()
+            min_amount_out = int(amounts[-1] * (1 - self.max_slippage / 100))
+            
+            # Build the transaction
+            nonce = await self.w3.eth.get_transaction_count(self.account.address)
+            gas_price = await self.w3.eth.gas_price
+            
             deadline = int(datetime.now().timestamp()) + 300  # 5 minutes
             
-            # Get current gas price
-            gas_price = await self.w3.eth.gas_price
-            if gas_price > Web3.to_wei(self.max_gas_price, 'gwei'):
-                raise ValueError(f"Gas price too high: {Web3.from_wei(gas_price, 'gwei')} Gwei")
-            
-            # Build transaction
-            transaction = await self.router.functions.swapExactETHForTokens(
+            # Create the swap transaction
+            txn = await self.router.functions.swapExactTokensForTokens(
+                amount,
                 min_amount_out,
                 path,
                 self.account.address,
                 deadline
             ).build_transaction({
                 'from': self.account.address,
-                'value': amount_in,
                 'gas': self.gas_limit,
                 'gasPrice': gas_price,
-                'nonce': await self.w3.eth.get_transaction_count(self.account.address)
+                'nonce': nonce,
             })
             
-            # Sign and send transaction
-            signed_txn = self.w3.eth.account.sign_transaction(transaction, self.account.key)
+            # Sign and send the transaction
+            signed_txn = self.w3.eth.account.sign_transaction(txn, self.account.key)
             tx_hash = await self.w3.eth.send_raw_transaction(signed_txn.rawTransaction)
-            
-            # Wait for transaction receipt
-            receipt = await self.w3.eth.wait_for_transaction_receipt(tx_hash)
-            
-            if receipt['status'] == 1:
-                logger.info(f"Trade successful! Transaction hash: {tx_hash.hex()}")
-                return True, tx_hash.hex()
-            else:
-                logger.error(f"Trade failed! Transaction hash: {tx_hash.hex()}")
-                return False, tx_hash.hex()
-            
+            return tx_hash
         except Exception as e:
-            logger.error(f"Error executing trade: {e}")
-            return False, str(e)
-
-    async def check_token_approval(self, token_address, amount):
-        """Check if token is approved for trading"""
-        try:
-            token_address = Web3.to_checksum_address(token_address)
-            token_contract = self.w3.eth.contract(
-                address=token_address,
-                abi=json.loads(open('abi/erc20.json', 'r').read())
-            )
-            
-            allowance = await token_contract.functions.allowance(
-                self.account.address,
-                self.router_address
-            ).call()
-            
-            return allowance >= amount
-        except Exception as e:
-            logger.error(f"Error checking token approval: {e}")
-            return False
-
-    async def approve_token(self, token_address):
-        """Approve token for trading"""
-        try:
-            token_address = Web3.to_checksum_address(token_address)
-            token_contract = self.w3.eth.contract(
-                address=token_address,
-                abi=json.loads(open('abi/erc20.json', 'r').read())
-            )
-            
-            # Get current gas price
-            gas_price = await self.w3.eth.gas_price
-            if gas_price > Web3.to_wei(self.max_gas_price, 'gwei'):
-                raise ValueError(f"Gas price too high: {Web3.from_wei(gas_price, 'gwei')} Gwei")
-            
-            # Build approval transaction
-            transaction = await token_contract.functions.approve(
-                self.router_address,
-                Web3.to_wei(2**64 - 1, 'ether')  # Unlimited approval
-            ).build_transaction({
-                'from': self.account.address,
-                'gas': 100000,  # Standard gas limit for approvals
-                'gasPrice': gas_price,
-                'nonce': await self.w3.eth.get_transaction_count(self.account.address)
-            })
-            
-            # Sign and send transaction
-            signed_txn = self.w3.eth.account.sign_transaction(transaction, self.account.key)
-            tx_hash = await self.w3.eth.send_raw_transaction(signed_txn.rawTransaction)
-            
-            # Wait for transaction receipt
-            receipt = await self.w3.eth.wait_for_transaction_receipt(tx_hash)
-            
-            if receipt['status'] == 1:
-                logger.info(f"Token approval successful! Transaction hash: {tx_hash.hex()}")
-                return True, tx_hash.hex()
-            else:
-                logger.error(f"Token approval failed! Transaction hash: {tx_hash.hex()}")
-                return False, tx_hash.hex()
-            
-        except Exception as e:
-            logger.error(f"Error approving token: {e}")
-            return False, str(e)
+            logger.error(f"Error executing trade: {str(e)}")
+            return None
 
 async def main():
-    """Main entry point for the trading bot."""
+    """Main entry point for testing the trading bot"""
     try:
-        # Initialize the trader
-        trader = DexTrader(chain='ethereum')  # Using Ethereum network
-        logger.info(f"Bot initialized successfully!")
-        logger.info(f"Connected to Ethereum network: {trader.w3.eth.chain_id}")
-        logger.info(f"Wallet address: {trader.account.address}")
+        trader = DexTrader()
+        await trader.initialize()
         
-        # Example: Monitor wallet balance
-        balance = await trader.w3.eth.get_balance(trader.account.address)
-        logger.info(f"Wallet balance: {Web3.from_wei(balance, 'ether')} ETH")
+        # Add your test code here
         
-        # Keep the bot running
-        while True:
-            # Add your trading logic here
-            await asyncio.sleep(60)  # Sleep for 60 seconds between checks
-            
-    except KeyboardInterrupt:
-        logger.info("\nBot stopped by user")
     except Exception as e:
-        logger.error(f"Error in main loop: {e}")
+        logger.error(f"Error in main: {str(e)}")
+        raise
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DEX Trading Bot</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #1a1a1a; color: #ffffff; }
+        .card { background-color: #2d2d2d; border: 1px solid #3d3d3d; }
+        .table { color: #ffffff; }
+        .nav-link { color: #ffffff; }
+        .nav-link:hover { color: #00ff00; }
+        
+        /* Watermark styles */
+        .watermark {
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            font-family: 'Arial', sans-serif;
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.3);
+            pointer-events: none;
+            user-select: none;
+            z-index: 9999;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+        }
+        
+        /* Make it impossible to hide via CSS */
+        .watermark {
+            visibility: visible !important;
+            opacity: 1 !important;
+            display: block !important;
+        }
+    </style>
+</head>
+<body>
+    <!-- Watermark -->
+    <div class="watermark">CryptoLover469</div>
+    
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">DEX Trading Bot</a>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <div class="row">
+            <!-- Wallet Info -->
+            <div class="col-md-4">
+                <div class="card mb-4">
+                    <div class="card-header">
+                        Wallet Information
+                    </div>
+                    <div class="card-body">
+                        <p>Address: <span id="wallet-address"></span></p>
+                        <p>Balance: <span id="wallet-balance">0 ETH</span></p>
+                        <p>Network: <span id="network">Ethereum Mainnet</span></p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Trading Stats -->
+            <div class="col-md-4">
+                <div class="card mb-4">
+                    <div class="card-header">
+                        Trading Statistics
+                    </div>
+                    <div class="card-body">
+                        <p>Total Trades: <span id="total-trades">0</span></p>
+                        <p>Successful Trades: <span id="successful-trades">0</span></p>
+                        <p>Current Profit/Loss: <span id="pnl">0.00 ETH</span></p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Gas Info -->
+            <div class="col-md-4">
+                <div class="card mb-4">
+                    <div class="card-header">
+                        Gas Information
+                    </div>
+                    <div class="card-body">
+                        <p>Current Gas Price: <span id="gas-price">0</span> Gwei</p>
+                        <p>Gas Limit: <span id="gas-limit">300000</span></p>
+                        <p>Max Gas Price: <span id="max-gas">150</span> Gwei</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Trading Pairs -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <ul class="nav nav-tabs card-header-tabs">
+                    <li class="nav-item">
+                        <a class="nav-link active" id="market-tab" data-bs-toggle="tab" href="#market-trades">Market Trades</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" id="limit-tab" data-bs-toggle="tab" href="#limit-trades">Limit Orders</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" id="transactions-tab" data-bs-toggle="tab" href="#transactions">Transaction Log</a>
+                    </li>
+                </ul>
+            </div>
+            <div class="card-body">
+                <div class="tab-content">
+                    <!-- Market Trades Tab -->
+                    <div class="tab-pane fade show active" id="market-trades">
+                        <table class="table table-dark">
+                            <thead>
+                                <tr>
+                                    <th>Pair</th>
+                                    <th>Price</th>
+                                    <th>24h Change</th>
+                                    <th>Liquidity</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="trading-pairs">
+                                <!-- Trading pairs will be added here dynamically -->
+                            </tbody>
+                        </table>
+                        <button class="btn btn-success" onclick="addNewPair()">Add New Pair</button>
+                    </div>
+                    
+                    <!-- Limit Orders Tab -->
+                    <div class="tab-pane fade" id="limit-trades">
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <div class="card bg-dark">
+                                    <div class="card-header">Place Limit Order</div>
+                                    <div class="card-body">
+                                        <form id="limit-order-form">
+                                            <div class="mb-3">
+                                                <label class="form-label">Token Address</label>
+                                                <input type="text" class="form-control bg-dark text-light" id="limit-token-address" placeholder="0x...">
+                                            </div>
+                                            <div class="mb-3">
+                                                <label class="form-label">Order Type</label>
+                                                <select class="form-select bg-dark text-light" id="limit-order-type">
+                                                    <option value="buy">Buy</option>
+                                                    <option value="sell">Sell</option>
+                                                </select>
+                                            </div>
+                                            <div class="mb-3">
+                                                <label class="form-label">Amount (ETH)</label>
+                                                <input type="number" class="form-control bg-dark text-light" id="limit-amount" step="0.001">
+                                            </div>
+                                            <div class="mb-3">
+                                                <label class="form-label">Limit Price (USD)</label>
+                                                <input type="number" class="form-control bg-dark text-light" id="limit-price" step="0.000001">
+                                            </div>
+                                            <div class="mb-3">
+                                                <label class="form-label">Expiry (hours)</label>
+                                                <input type="number" class="form-control bg-dark text-light" id="limit-expiry" value="24">
+                                            </div>
+                                            <button type="submit" class="btn btn-success">Place Order</button>
+                                        </form>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="card bg-dark">
+                                    <div class="card-header">Active Limit Orders</div>
+                                    <div class="card-body">
+                                        <table class="table table-dark">
+                                            <thead>
+                                                <tr>
+                                                    <th>Type</th>
+                                                    <th>Token</th>
+                                                    <th>Amount</th>
+                                                    <th>Price</th>
+                                                    <th>Expires</th>
+                                                    <th>Action</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="limit-orders">
+                                                <!-- Active limit orders will be added here -->
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Transaction Log Tab -->
+                    <div class="tab-pane fade" id="transactions">
+                        <table class="table table-dark">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Type</th>
+                                    <th>Token Address</th>
+                                    <th>Amount</th>
+                                    <th>Price</th>
+                                    <th>Gas Used</th>
+                                    <th>Status</th>
+                                    <th>Tx Hash</th>
+                                </tr>
+                            </thead>
+                            <tbody id="transaction-log">
+                                <!-- Transaction logs will be added here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bot Controls -->
+        <div class="card mb-4">
+            <div class="card-header">
+                Bot Controls
+            </div>
+            <div class="card-body">
+                <button class="btn btn-success me-2" onclick="startBot()">Start Bot</button>
+                <button class="btn btn-danger me-2" onclick="stopBot()">Stop Bot</button>
+                <button class="btn btn-warning me-2" onclick="pauseBot()">Pause Bot</button>
+                <button class="btn btn-info" onclick="showSettings()">Settings</button>
+            </div>
+        </div>
+
+        <!-- Activity Log -->
+        <div class="card mb-4">
+            <div class="card-header">
+                Activity Log
+            </div>
+            <div class="card-body">
+                <div id="activity-log" style="height: 200px; overflow-y: scroll;">
+                    <!-- Log entries will be added here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.9.2/dist/umd/popper.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/main.js"></script>
+    <script src="/static/js/limit-orders.js"></script>
+    <script>
+        // Initialize WebSocket when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            initWebSocket();
+        });
+    </script>
+</body>
+</html>
